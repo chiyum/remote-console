@@ -1,0 +1,11 @@
+# 建置產物
+/dev-console
+/bin/
+/dist/
+# 測試二進位與覆蓋率
+*.test
+*.out
+coverage.*
+# 安裝紀錄（含安裝者的個人值；實際位置在 ~/.local/share/dev-console/，這裡防止誤複製進 repo）
+install.env
+.DS_Store

@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark light">
+  <title>dev-console</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="top">
+    <h1>dev-console</h1>
+    <span id="conn" class="conn conn-wait" title="即時連線狀態">連線中…</span>
+    <span id="ttyd" class="conn conn-wait" title="終端機服務（ttyd）狀態" hidden></span>
+    <span id="who" class="muted"></span>
+  </header>
+
+  <main>
+    <section class="panel" id="pair-panel" hidden>
+      <h2>配對此裝置</h2>
+      <p class="small">此裝置尚未配對。在 Mac 終端機執行 <code class="mono">~/.local/share/dev-console/bin/dev-console pair</code>，輸入顯示的配對碼（10 分鐘內、單次有效），或直接開它印出的網址。</p>
+      <form id="pair-form" class="row">
+        <input name="code" id="pair-code" placeholder="XXXXX-XXXXX" autocomplete="one-time-code" autocapitalize="characters" spellcheck="false" required>
+        <button type="submit" class="primary" id="pair-submit">配對</button>
+      </form>
+      <p id="pair-msg" class="err" role="alert"></p>
+    </section>
+
+    <div id="app-body">
+    <section class="panel" id="launch-panel">
+      <button id="launch-toggle" class="primary" type="button" aria-expanded="false" aria-controls="launch-form">＋ 新開 session</button>
+      <form id="launch-form" hidden>
+        <fieldset class="row">
+          <legend>工具</legend>
+          <label><input type="radio" name="tool" value="claude" checked> Claude</label>
+          <label><input type="radio" name="tool" value="codex"> Codex</label>
+        </fieldset>
+        <label class="row" id="profile-row">Profile
+          <select name="profile" id="profile-select" required></select>
+        </label>
+        <details id="dir-details">
+          <summary>指定目錄（進階，預設 ~）</summary>
+          <input name="dir" id="dir-input" placeholder="~/Documents/GitHub/..." autocomplete="off" autocapitalize="off" spellcheck="false">
+        </details>
+        <div class="row">
+          <button type="submit" class="primary" id="launch-submit">開始</button>
+          <span id="launch-msg" class="err" role="alert"></span>
+        </div>
+      </form>
+    </section>
+
+    <section>
+      <h2>Session <span id="session-count" class="muted"></span></h2>
+      <div id="sessions" class="cards"></div>
+    </section>
+
+    <div id="errors" class="panel err small" role="alert" hidden></div>
+
+    <section>
+      <h2>任務 <span id="task-count" class="muted"></span></h2>
+      <div id="tasks" class="tasks"></div>
+      <details id="tasks-old-wrap" class="tasks-old">
+        <summary id="tasks-old-summary">較舊／已完成</summary>
+        <div id="tasks-old" class="tasks"></div>
+      </details>
+    </section>
+
+    <section>
+      <h2>看門狗</h2>
+      <div id="watchdog" class="panel mono"></div>
+    </section>
+    <section>
+      <details id="archived-wrap" class="tasks-old">
+        <summary id="archived-summary">已封存（0）</summary>
+        <div id="archived" class="tasks"></div>
+      </details>
+    </section>
+    <p class="muted small" id="generated"></p>
+    </div>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>

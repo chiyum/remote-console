@@ -1,0 +1,31 @@
+# gitleaks 設定：沿用預設規則，只對已確認的誤報做「單一檔案路徑＋具體字串」雙條件放行。
+# 路徑以 (^|/) 開頭而不錨定在字串開頭：從 repo 外以絕對路徑執行 gitleaks dir 時，路徑帶有前綴目錄，仍須命中同一個檔。
+# 為什麼不整檔、整目錄或整規則放行：這些檔案日後若真的混進金鑰，仍要能被抓到；
+# 每一筆都限定在單一檔案且只比對那個固定的假值，換任何其他字串都照樣報。
+
+[extend]
+useDefault = true
+
+# 測試常數：認證測試用的 64 字元樣板 token（0-9a-f 重複四次），不是真憑證。
+[[allowlists]]
+description = "認證測試的樣板 token"
+condition = "AND"
+paths = ['''(^|/)internal/server/auth_test\.go$''']
+regexTarget = "secret"
+regexes = ['''^(0123456789abcdef){4}$''']
+
+# RFC 6455 第 1.3 節的範例 Sec-WebSocket-Key（"the sample nonce" 的 base64），握手測試需要固定值。
+[[allowlists]]
+description = "RFC 6455 範例 Sec-WebSocket-Key（server 測試）"
+condition = "AND"
+paths = ['''(^|/)internal/server/server_test\.go$''']
+regexTarget = "secret"
+regexes = ['''^dGhlIHNhbXBsZSBub25jZQ==$''']
+
+# 環境變數引用：腳本從 TS_API_TOKEN 讀 Tailscale API token，檔案裡只有變數名，沒有值。
+[[allowlists]]
+description = "tailscale-acl.sh 的 TS_API_TOKEN 變數引用"
+condition = "AND"
+paths = ['''(^|/)scripts/tailscale-acl\.sh$''']
+regexTarget = "secret"
+regexes = ['''^"?\$\{TS_API_TOKEN\}:?"?$''']

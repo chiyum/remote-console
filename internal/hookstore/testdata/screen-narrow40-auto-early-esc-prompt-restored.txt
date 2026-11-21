@@ -1,0 +1,40 @@
+
+ ▐▛███▛█   Claude Code v0.0.000
+▝▜██████▀  Model 0.0 · Test Plan
+ ▝▝   ▝▝   /…/scratchpad/a8r4-work
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  tmux detected · scroll with PgUp/Pg…
+────────────────────────────────────────
+❯ 請用 Bash 工具原封不動執行這一行（不
+  要改寫）：for i in 1 2 3 4 5 6 7 8 9
+  10 11 12; do sleep 5; done; echo ok
+  執行完只回 OK
+────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle)

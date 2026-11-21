@@ -1,0 +1,40 @@
+  必遼闊，不必深邃，只要在最喧鬧的日子裡
+  ，仍能聽見那一聲一聲、不肯停歇的浪。
+
+  ---
+
+  接著執行你要的指令：
+
+  Creating temp dir, clear its contents,
+  then waiting 20 seconds
+  ⎿  $ D=/tmp/dc-a8r4c; mkdir -p $D; rm
+     -rf $D/*; sleep 20
+
+────────────────────────────────────────
+ Bash command
+ Tip: auto mode handles these prompts
+ for you — choose "switch to auto mode"
+ below
+ Create temp dir, clear its contents,
+ then wait 20 seconds
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ D=/tmp/dc-a8r4c; mkdir -p $D; rm -rf
+ $D/*; sleep 20
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ │ Glob patterns are not allowed in
+ │ write operations. Please specify an
+ │ exact file path.
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. Yes, and don't ask again for mkdir
+      -p /tmp/dc-a8r4c and rm -rf
+      /tmp/dc-a8r4c/* commands in
+      /private/tmp/claude-501/-Users-tes
+      ter/aaaaaaaa-0000-4000-8000-000000
+      000001/scratchpad/a8r4-work
+   3. Yes, and switch to auto mode ·
+      auto mode handles these prompts
+   4. Nor you
+
+ Esc to cancel · Tab to amend

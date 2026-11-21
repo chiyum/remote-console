@@ -1,0 +1,95 @@
+/* 終端機頁按鍵列（注入 ttyd index，見 keybar.js 與 ADR 0005）。尺寸一律用 em，由 keybar.js 依手機縮放倍率設定 font-size。 */
+#dc-keybar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 1000;
+  display: none;
+  flex-wrap: wrap;
+  gap: 0.35em;
+  box-sizing: border-box;
+  padding: 0.4em 0.4em calc(0.4em + env(safe-area-inset-bottom, 0px));
+  background: #1f2328;
+  border-top: 1px solid #3a3f45;
+  font: 600 15px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+html.dc-kb-open #dc-keybar {
+  display: flex;
+}
+/* 終端機區真的縮小（不是被蓋住），xterm fit 後列數變少、tmux 視窗跟著變小。 */
+html.dc-kb-open #terminal-container {
+  height: calc(100% - var(--dc-kb-h, 0px)) !important;
+}
+#dc-keybar button,
+#dc-keybar-toggle {
+  font: inherit;
+  color: #e6edf3;
+  background: #2d333b;
+  border: 1px solid #444c56;
+  border-radius: 0.4em;
+  /* 沒有 viewport meta 的頁面會有雙擊縮放與點擊延遲；manipulation 兩者都關掉，快速連點才不會放大畫面。 */
+  touch-action: manipulation;
+  cursor: pointer;
+}
+#dc-keybar button {
+  flex: 1 0 auto;
+  min-width: 2.6em;
+  min-height: 2.6em;
+  padding: 0 0.5em;
+}
+#dc-keybar button:active {
+  background: #3b4450;
+}
+#dc-keybar .dc-kb-danger {
+  color: #ffb4ab;
+}
+#dc-keybar .dc-kb-hide {
+  color: #9da7b3;
+}
+#dc-kb-msg {
+  display: none;
+  flex-basis: 100%;
+  color: #ffb4ab;
+  font-weight: 400;
+  line-height: 1.3;
+}
+#dc-keybar.dc-kb-has-msg #dc-kb-msg {
+  display: block;
+}
+#dc-keybar-toggle {
+  position: fixed;
+  right: 0.4em;
+  bottom: 0.4em;
+  z-index: 1000;
+  padding: 0.3em 0.6em;
+  opacity: 0.55;
+}
+#dc-keybar-toggle:hover {
+  opacity: 1;
+}
+html.dc-kb-open #dc-keybar-toggle {
+  display: none;
+}
+
+/* 終端機服務狀態橫幅（termguard.js，ADR 0006）：蓋在終端機最上方，不搶焦點。 */
+#dc-term-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1001;
+  box-sizing: border-box;
+  padding: 0.6em 1em;
+  background: #1f6feb;
+  color: #fff;
+  font: 600 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  text-align: center;
+  pointer-events: none;
+}
+#dc-term-banner.dc-term-banner-error {
+  background: #b62324;
+}
