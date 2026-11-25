@@ -120,7 +120,13 @@ Codex sessions started through aiuse are claimed by protocol markers, not by a l
 ## Use
 
 - Overview: `https://<machine>.<tailnet>.ts.net/` (locally: `http://dev-console.localhost:7690/`).
-- Terminal: the "open terminal" button on a card (`/term/?arg=<tmux session>`). On phones a key bar (Esc, Tab, Shift-Tab, arrows, Enter, 1–4, Ctrl-C) sits at the bottom.
+- Terminal: the "open terminal" button on a card (`/term/?arg=<tmux session>`). On phones a key bar (Esc, Tab, Shift-Tab, arrows, Enter, 1–4, Ctrl-C, ▲ scroll up, ▼ scroll down) sits at the bottom.
+- Scrolling on phones (ADR 0009): Claude and Codex are full-screen programs that handle scrolling themselves, and touch does not produce wheel events, so the terminal could not be scrolled on a phone. Now:
+  - ▲ / ▼ scroll one page per tap (the program's own PageUp / PageDown; Claude Code 2.1.332 moves about 17 rows on a 40-row screen, Codex 0.170.0 about a full page).
+  - Dragging a finger up or down on the terminal scrolls like any phone app (drag down to see older output), one row per row-height of finger movement. A touch that moves less than about 10 device pixels is still a tap (focuses the terminal and opens the keyboard); pinch zoom and mostly-horizontal drags are left alone; there is no momentum. Desktop mouse wheel and drag-to-select are unchanged.
+  - The scroll position belongs to the program, so a Mac attached to the same session sees the same scrolled view.
+  - Plain shells scroll through tmux copy-mode (`copy-mode -e`, leaves automatically at the bottom; press Esc to leave early). Other full-screen programs that do not enable mouse reporting (vim, less, …) get PageUp / PageDown from the buttons, but finger drags are refused rather than typing escape sequences into them.
+  - API: `POST /api/sessions/scroll {"session","action","count"}` — `action` is one of `page-up`, `page-down`, `line-up`, `line-down`; `count` is 1–30 for line scrolling. The server reads the pane flags and decides what to send; nothing user-supplied reaches `send-keys`.
 - On the Mac: `tmux attach -t <name>`.
 - The "tasks and watchdog" panel is optional. It shows task state files that the author's own separate workflow writes under `~/.claude/state/`. On a machine without those files the panel is simply empty; nothing else depends on it and you do not need to create anything.
 - The web UI and the installer's messages are in Traditional Chinese only.

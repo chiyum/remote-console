@@ -10,3 +10,4 @@
 | [0006](0006-ttyd-attach-no-exec-and-self-recovery-in-web-service.md) | ttyd-attach 不 exec tmux（修 macOS tty drain 死結漏 fd）；ttyd 自動恢復放 web 服務內，以反代追蹤的 WebSocket 數判斷有無連線 | 已採用 |
 | [0007](0007-parameterized-optional-install.md) | 給別人安裝：選用模組、個人值改必填參數、只產檔模式（NO_LOAD／TARGET_HOME） | 已採用（認領協定部分由 0008 修訂） |
 | [0008](0008-standalone-repo-dual-protocol-direct-mode.md) | 抽成獨立 repo；Codex 認領同時相容有／無 token 兩代 aiuse（同 profile 串行化）；沒有 aiuse 的直接模式 | 已採用 |
+| [0009](0009-terminal-scroll-by-pane-state.md) | 手機終端機捲動：後端依 pane 狀態送翻頁鍵、SGR 滾輪或 tmux copy-mode；新增白名單捲動 API 與手指滑動 | 已採用（延伸 0005） |

@@ -4,6 +4,7 @@ package tmux
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"regexp"
@@ -329,4 +330,150 @@ func SendWebKey(ctx context.Context, r Runner, sessionID, webKey string) error {
 	}
 	_, err := r.Run(ctx, "send-keys", "-t", sessionID, key)
 	return err
+}
+
+// 捲動動作（ADR 0009）：按鍵列的 ▲／▼ 用翻頁，手機手指滑動用逐列。只有這 4 個，不接受任意字串。
+const (
+	ScrollPageUp   = "page-up"
+	ScrollPageDown = "page-down"
+	ScrollLineUp   = "line-up"
+	ScrollLineDown = "line-down"
+)
+
+// MaxScrollLines 是逐列捲動一次請求的上限；前端滑動距離超過就分多次送。
+// 上限讓一個請求最多產生 30 個滾輪事件，避免一次送出大量序列卡住程式或 tmux。
+const MaxScrollLines = 30
+
+// ErrScrollUnsupported 表示目前畫面沒有安全的捲動方式（例如全螢幕程式沒開滑鼠回報、或 pane 停在其他 tmux 模式）。
+// 這時寧可不捲，也不把滾輪跳脫序列當文字塞進去。
+var ErrScrollUnsupported = errors.New("目前畫面不支援這種捲動")
+
+// sgrWheelCommands 是「沒開滑鼠回報也會解析 SGR 滾輪序列」且已實測的全螢幕程式（pane_current_command）。
+// Codex 0.170.0 的 mouse_any_flag=0，但收到 ESC[<64;x;yM 會捲一列、輸入框無殘字（2026-11 實測）；
+// 其他沒開滑鼠回報的程式（vim、less…）收到同樣位元組可能當成按鍵或文字，所以不在名單就不送。
+var sgrWheelCommands = map[string]bool{"codex": true}
+
+// PaneScrollState 是決定捲動方式所需的 pane 旗標（display-message 取得）。
+type PaneScrollState struct {
+	Alternate bool   // alternate_on：全螢幕程式（Claude／Codex）自己管捲動，tmux 沒有 scrollback 可捲
+	MouseAny  bool   // mouse_any_flag：程式要求了滑鼠回報
+	MouseSGR  bool   // mouse_sgr_flag：滑鼠回報用 SGR 編碼
+	InMode    bool   // pane_in_mode：pane 正在 tmux 模式（copy-mode 等）
+	Mode      string // pane_mode
+	History   int    // history_size：tmux scrollback 列數
+	Width     int
+	Height    int
+	Command   string // pane_current_command
+}
+
+const scrollStateFmt = "#{alternate_on}\t#{mouse_any_flag}\t#{mouse_sgr_flag}\t#{pane_in_mode}\t#{pane_mode}\t#{history_size}\t#{pane_width}\t#{pane_height}\t#{pane_current_command}"
+
+// ParseScrollState 解析 scrollStateFmt 的輸出。
+func ParseScrollState(out string) (PaneScrollState, error) {
+	f := strings.SplitN(strings.TrimRight(out, "\n"), "\t", 9)
+	if len(f) != 9 {
+		return PaneScrollState{}, fmt.Errorf("pane 狀態格式不對：%q", out)
+	}
+	st := PaneScrollState{Alternate: f[0] == "1", MouseAny: f[1] == "1", MouseSGR: f[2] == "1", InMode: f[3] == "1", Mode: f[4], Command: f[8]}
+	st.History, _ = strconv.Atoi(f[5])
+	st.Width, _ = strconv.Atoi(f[6])
+	st.Height, _ = strconv.Atoi(f[7])
+	return st, nil
+}
+
+// ValidScroll 檢查動作與次數：翻頁只能 1 次（count 0 視為 1），逐列 1～MaxScrollLines。回傳正規化後的次數。
+func ValidScroll(action string, count int) (int, bool) {
+	switch action {
+	case ScrollPageUp, ScrollPageDown:
+		if count == 0 || count == 1 {
+			return 1, true
+		}
+	case ScrollLineUp, ScrollLineDown:
+		if count >= 1 && count <= MaxScrollLines {
+			return count, true
+		}
+	}
+	return 0, false
+}
+
+// PlanScroll 依 pane 當下旗標決定要下哪個 tmux 指令（argv），純函式方便測試。回傳 nil 表示不需要動作（例如已在底部）。
+//
+//	tmux copy-mode 中：用 copy-mode 自己的捲動指令（send-keys -X），不送任何位元組給程式。
+//	全螢幕程式：翻頁送 PPage／NPage（Claude、Codex 實測都有效）；逐列送 SGR 滾輪序列，
+//	            只在程式開了 SGR 滑鼠回報、或在已實測的 sgrWheelCommands 名單時才送。序列由常數與 pane 尺寸組成，不含使用者字串。
+//	一般 shell（非全螢幕）：往上捲進入 copy-mode -e（捲回底部自動離開），往下捲且不在 copy-mode＝已在底部，不動作。
+func PlanScroll(st PaneScrollState, sessionID, action string, count int) ([][]string, string, error) {
+	up := action == ScrollPageUp || action == ScrollLineUp
+	page := action == ScrollPageUp || action == ScrollPageDown
+	copyCmd := func() []string {
+		switch {
+		case page && up:
+			return []string{"send-keys", "-t", sessionID, "-X", "page-up"}
+		case page:
+			return []string{"send-keys", "-t", sessionID, "-X", "page-down"}
+		case up:
+			return []string{"send-keys", "-t", sessionID, "-X", "-N", strconv.Itoa(count), "scroll-up"}
+		default:
+			return []string{"send-keys", "-t", sessionID, "-X", "-N", strconv.Itoa(count), "scroll-down"}
+		}
+	}
+	if st.InMode {
+		if st.Mode != "copy-mode" {
+			return nil, "", ErrScrollUnsupported
+		}
+		return [][]string{copyCmd()}, "copy-mode", nil
+	}
+	if st.Alternate {
+		if page {
+			key := "NPage"
+			if up {
+				key = "PPage"
+			}
+			return [][]string{{"send-keys", "-t", sessionID, key}}, "page-key", nil
+		}
+		if !(st.MouseAny && st.MouseSGR) && !sgrWheelCommands[st.Command] {
+			return nil, "", ErrScrollUnsupported
+		}
+		// 滾輪事件座標取 pane 中央（1 起算）；64＝滾輪上、65＝滾輪下。
+		btn := 65
+		if up {
+			btn = 64
+		}
+		ev := fmt.Sprintf("\x1b[<%d;%d;%dM", btn, max(1, st.Width/2+1), max(1, st.Height/2+1))
+		return [][]string{{"send-keys", "-t", sessionID, "-l", strings.Repeat(ev, count)}}, "sgr-wheel", nil
+	}
+	if !up || st.History == 0 {
+		return nil, "noop", nil
+	}
+	// 進 copy-mode 與第一次捲動用 tmux 的 ";" 串在同一次呼叫，中間不會有別的輸入插進來。
+	return [][]string{append([]string{"copy-mode", "-e", "-t", sessionID, ";"}, copyCmd()...)}, "copy-mode", nil
+}
+
+// SendScroll 對 session id（$N）的作用中 pane 捲動；目標規則同 SendWebKey。回傳實際用的方式（寫 log 用）。
+func SendScroll(ctx context.Context, r Runner, sessionID, action string, count int) (string, error) {
+	if !sessionIDRe.MatchString(sessionID) {
+		return "", fmt.Errorf("tmux session id 格式不合法：%q", sessionID)
+	}
+	n, ok := ValidScroll(action, count)
+	if !ok {
+		return "", fmt.Errorf("不支援的捲動：%q×%d", action, count)
+	}
+	out, err := r.Run(ctx, "display-message", "-p", "-t", sessionID, scrollStateFmt)
+	if err != nil {
+		return "", err
+	}
+	st, err := ParseScrollState(out)
+	if err != nil {
+		return "", err
+	}
+	cmds, method, err := PlanScroll(st, sessionID, action, n)
+	if err != nil {
+		return "", err
+	}
+	for _, c := range cmds {
+		if _, err := r.Run(ctx, c...); err != nil {
+			return method, err
+		}
+	}
+	return method, nil
 }

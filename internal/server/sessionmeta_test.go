@@ -25,6 +25,8 @@ type metaTmux struct {
 	killErr error
 	order   []string
 	sess    map[string][2]string // id → {list-sessions 列, list-panes 列}
+	// scroll 是 display-message 回的 pane 捲動狀態（tmux.scrollStateFmt 格式）；空字串時回 Claude 全螢幕＋SGR 滑鼠。
+	scroll string
 }
 
 func newMetaTmux() *metaTmux {
@@ -55,6 +57,11 @@ func (f *metaTmux) Run(_ context.Context, args ...string) (string, error) {
 		col = 0
 	case "list-panes":
 		col = 1
+	case "display-message":
+		if f.scroll == "" {
+			return "1\t1\t1\t0\t\t0\t100\t40\t2.1.332\n", nil
+		}
+		return f.scroll, nil
 	case "kill-session":
 		if f.killErr != nil {
 			return "", f.killErr

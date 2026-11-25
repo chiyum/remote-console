@@ -200,18 +200,26 @@ TS_API_TOKEN=... scripts/tailscale-acl.sh --src you@example.com --ip 100.x.y.z -
 
 ### 終端機按鍵列（手機操作 Claude 選單，ADR 0005）
 
-手機鍵盤沒有方向鍵、Esc、Tab，Claude 的權限框與選擇題沒辦法操作。終端機頁底部有一排按鍵：`Esc`、`Tab`、`⇧Tab`、`↑ ↓ ← →`、`Enter`、`1 2 3 4`、`Ctrl+C`，點了等於在這個 session 按下該鍵。
+手機鍵盤沒有方向鍵、Esc、Tab，Claude 的權限框與選擇題沒辦法操作。終端機頁底部有一排按鍵：`Esc`、`Tab`、`⇧Tab`、`↑ ↓ ← →`、`Enter`、`1 2 3 4`、`Ctrl+C`，點了等於在這個 session 按下該鍵；列尾另有 `▲ 上捲`、`▼ 下捲`（ADR 0009）。
 
 - **手機用法**：權限框出現時點 `↓`／`↑` 移動、`Enter` 確認，或直接點選項編號 `1`～`4`；`Esc` 取消；`⇧Tab` 切換 Claude 模式。`Ctrl+C` 會先跳確認框，取消就不送。
 - **顯示**：觸控裝置（`pointer: coarse`）預設展開，桌機預設收起，右下角「⌨ 按鍵」展開、列尾「收起」收起；展開狀態存在 localStorage（觸控與桌機分開記，存不了就用預設）。
 - **不會彈出手機鍵盤**：按鈕不取得焦點，點之前若焦點在 xterm 的輸入框會先移開（正在用手機鍵盤打字時點按鍵列，鍵盤會收起）。
 - **不遮畫面**：展開時終端機區縮成「視窗高 − 按鍵列高」再重新 fit，xterm 列數變少、tmux 視窗跟著變小，最底一行不被蓋住。ttyd 頁沒有 viewport meta，手機上以約 980px 寬排版再縮小，按鍵依縮放倍率放大到手指點得到的大小（沒有改 viewport，終端機欄數與以前相同）。
-- **順序**：連點時前端排隊，前一個請求結束才送下一個，順序與次數不變。
+- **順序**：連點時前端排隊，前一個請求結束才送下一個，順序與次數不變（捲動鍵與手指滑動也排在同一條佇列）。
+- **捲動（ADR 0009）**：Claude 與 Codex 是全螢幕程式，捲動由程式自己處理，tmux 沒有可捲的歷史，手機觸控也不會產生滾輪，所以以前在手機上捲不動。
+  - `▲ 上捲`／`▼ 下捲`：每點一次翻一頁（送程式的 PageUp／PageDown；Claude Code 2.1.332 在 40 列畫面約捲 17 列，Codex 0.170.0 約捲一整頁）。
+  - 手指在終端機上下滑：方向和一般手機 App 相同，手指往下拖＝看更早的內容；手指移動一列字高就捲一列（換算用 xterm 實際的列高，頁面縮放後照樣跟手）。位移小於約 10 個裝置像素視為輕點，照常聚焦、叫出鍵盤；雙指縮放與偏橫向的拖動不處理；沒有慣性，手指放開後只把已滑過的列數送完。只有觸控事件會觸發，桌機滑鼠滾輪與拖曳選字不變。
+  - 捲到底：用 `▼` 或手指往上滑回去。
+  - 捲動位置是程式自己記的：手機捲上去後，Mac 端 attach 同一個 session 也會看到同樣的畫面。
+  - 普通 shell（不是全螢幕程式）：往上捲時進入 tmux copy-mode（`copy-mode -e`），捲回底部自動離開；在 copy-mode 中打字會被 copy-mode 吃掉，按 `Esc`（tmux 預設 emacs 鍵位）或捲到底即可離開。在底部往下捲不做任何事。
+  - 其他沒開滑鼠回報的全螢幕程式（例如 vim、less）：`▲`／`▼` 送 PageUp／PageDown；手指滑動不送（回 409、按鍵列顯示「捲動沒送出」），避免把滾輪序列當成文字塞進程式。
 - **掛載方式**：dev-console 反代 ttyd 的 index 頁時，在 `</head>` 前插入 `/keybar.css`、`/keybar.js`（靜態檔，不含資料）。瀏覽器接受 gzip 時，反代讓 Go 的 Transport 透明解壓、改寫後再壓回去。找不到 `</head>`（ttyd 改版）就原樣回傳並寫 log：終端機照常可用，只是沒有按鍵列。`/term/?arg=` 網址不變。
 
 | API | body | 說明 |
 |---|---|---|
 | `POST /api/sessions/keys` | `{"session":"aiuse-claude-work-…","key":"down"}` | `key` 只收 `esc`、`tab`、`btab`、`up`、`down`、`left`、`right`、`enter`、`1`～`4`、`ctrl-c`（對應 tmux 鍵名 `Escape`、`Tab`、`BTab`、`Up`…、`C-c`），其他一律 400，不送任意文字。`session` 必須符合名稱規則（含 `;`、`:`、`=` 等 400），並在當下的 `list-sessions` 有**完全同名**的 session（否則 404，不會前綴比對到別的 session）；以該 session 的 `$N` 執行 `tmux send-keys -t $N <鍵名>`，送到它目前作用中的 pane。成功 204；回應不帶任何 tmux 輸出。需 cookie＋寫入 API 標頭（缺任一 403） |
+| `POST /api/sessions/scroll` | `{"session":"…","action":"page-up"}`、`{"session":"…","action":"line-up","count":3}` | `action` 只收 `page-up`、`page-down`（按鍵列；`count` 省略或 1）與 `line-up`、`line-down`（手指滑動；`count` 必填，1～30 的整數），其他、0、負數、小數、超過 30 一律 400。`session` 驗證與目標規則同上。後端先以 `display-message` 讀 pane 的 `alternate_on`、`mouse_any_flag`、`mouse_sgr_flag`、`pane_in_mode`、`history_size` 等旗標再決定送什麼：全螢幕程式翻頁送 `PPage`／`NPage`，逐列送 SGR 滾輪序列 `ESC[<64;x;yM`（上）／`ESC[<65;x;yM`（下）×count（座標取 pane 中央，序列由伺服器常數組成，只在程式開了 SGR 滑鼠回報、或是已實測的 `codex` 時才送）；普通 shell 往上用 `copy-mode -e`＋`send-keys -X`；tmux copy-mode 中直接用 copy-mode 的捲動指令。不支援時回 409 且不送任何東西。成功 204 |
 
 ### 暱稱與封存（ADR 0004）
 
@@ -416,6 +424,7 @@ kill "$WEB_PID"
 - **tmux argv 結尾是 `;` 的參數會被當成指令分隔**：`tmux set-option -t $1 @x 'a;'` 存進去的是 `a`（3.7c 實測），所以暱稱結尾不可是分號。
 - **iTerm2 標題 unset 不會復原**：tmux 只在 `set-titles on` 時送標題，直接 unset 後 iTerm2 停在最後一次的標題；要先送空標題再 unset。
 - **tmux `send-keys -t` 是 pane 目標**：不能寫 `=名稱`；按鍵 API 先從 `list-sessions` 以精確名稱取 `$N` 再送。
+- **全螢幕程式在 tmux 裡沒有 scrollback**：Claude／Codex 的 pane `alternate_on=1`、`history_size` 近 0，copy-mode 捲不到它們的對話；要捲得送程式自己認得的鍵或滾輪序列（ADR 0009）。tmux copy-mode 的 `page-up` 一次捲「pane 高度 − 2」列。
 - **`cat -v` 不會把 Tab 顯示成 `^I`**：驗按鍵順序用 `cat -vt`，而且只按不送 Enter 時畫面上是 tty 回顯（Tab 顯示成空白），送 Enter 後 cat 印出的那一行才是 `^I`。
 - **ttyd 斷線時 `exec tmux` 會死結漏 fd（macOS）**：網頁斷線時 ttyd 1.7.7 停讀 pty、對子程序群組送 SIGHUP，等子程序結束才 close master。tmux client 收 HUP 會寫還原終端的控制碼；macOS 最後一次 close tty 會等輸出排空且沒有逾時，沒人讀 master 就永遠排不空：tmux 卡在 `E` 狀態、ttyd 每次漏 3 個 fd（master＋2 dup），撞到 launchd 預設上限 256 後所有人都開不了終端機（`pty_spawn: 24 (Too many open files)`）。瀏覽器的 xterm 寫不完時會送 PAUSE 讓 ttyd 停讀 pty，所以手機最容易觸發；乾淨斷線不一定重現。修法是讓 bash 留著同一個 tty、tmux 背景跑，結束後 `tcflush(TCOFLUSH)` 再退出。上游 1.7.7 未修。
 - **launchd 的 PATH 很短**：tmux server 若由 launchd 這邊先起，之後所有 session 都繼承短 PATH；所以 plist 與新開 session 都明確帶完整 PATH。

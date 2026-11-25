@@ -41,27 +41,76 @@ func (s *Server) handleKeys(w http.ResponseWriter, r *http.Request, id Identity)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "session 名稱不合法"})
 		return
 	}
-	sessions, err := tmux.ListSessions(r.Context(), s.Tmux)
-	if err != nil {
-		log.Printf("[keys] list-sessions 失敗：%v", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "查詢 tmux 失敗"})
-		return
-	}
-	sid := ""
-	for _, sess := range sessions {
-		if sess.Name == req.Session {
-			sid = sess.ID
-			break
-		}
-	}
-	if sid == "" {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "找不到這個 session（可能已結束）"})
+	sid, ok := s.resolveSessionID(w, r, req.Session)
+	if !ok {
 		return
 	}
 	if err := tmux.SendWebKey(r.Context(), s.Tmux, sid, req.Key); err != nil {
 		// tmux 的錯誤訊息只寫 log，不回給前端。
 		log.Printf("[keys] %s 送 %s 到 %s(%s) 失敗：%v", id.Login, req.Key, req.Session, sid, err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "送出按鍵失敗"})
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// resolveSessionID 以當下 list-sessions 精確同名取 session id（$N）；找不到或查詢失敗時已寫好回應並回 false。
+// 呼叫前必須先用 validate.SessionName 擋掉 tmux target 語法。
+func (s *Server) resolveSessionID(w http.ResponseWriter, r *http.Request, name string) (string, bool) {
+	sessions, err := tmux.ListSessions(r.Context(), s.Tmux)
+	if err != nil {
+		log.Printf("[keys] list-sessions 失敗：%v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "查詢 tmux 失敗"})
+		return "", false
+	}
+	for _, sess := range sessions {
+		if sess.Name == name {
+			return sess.ID, true
+		}
+	}
+	writeJSON(w, http.StatusNotFound, map[string]string{"error": "找不到這個 session（可能已結束）"})
+	return "", false
+}
+
+// ScrollRequest 是終端機頁捲動的輸入：action 只收 4 個白名單動作，count 是逐列的列數（翻頁省略或 1）。
+type ScrollRequest struct {
+	Session string `json:"session"`
+	Action  string `json:"action"`
+	Count   int    `json:"count,omitempty"`
+}
+
+// handleScroll 捲動指定 session 的作用中 pane（ADR 0009）。驗證順序與 handleKeys 相同；
+// 實際送什麼由 tmux.PlanScroll 依 pane 當下旗標決定，使用者輸入只會是白名單動作與有上限的整數。
+// 畫面不支援時回 409，不做任何送出。
+func (s *Server) handleScroll(w http.ResponseWriter, r *http.Request, id Identity) {
+	if !s.csrfOK(w, r) {
+		return
+	}
+	var req ScrollRequest
+	if !decodeStrict(w, r, &req) {
+		return
+	}
+	n, ok := tmux.ValidScroll(req.Action, req.Count)
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "不支援的捲動"})
+		return
+	}
+	if !validate.SessionName(req.Session) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "session 名稱不合法"})
+		return
+	}
+	sid, ok := s.resolveSessionID(w, r, req.Session)
+	if !ok {
+		return
+	}
+	method, err := tmux.SendScroll(r.Context(), s.Tmux, sid, req.Action, n)
+	if errors.Is(err, tmux.ErrScrollUnsupported) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "這個畫面不支援這種捲動"})
+		return
+	}
+	if err != nil {
+		log.Printf("[keys] %s 捲動 %s×%d 到 %s(%s) 失敗（%s）：%v", id.Login, req.Action, n, req.Session, sid, method, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "捲動失敗"})
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

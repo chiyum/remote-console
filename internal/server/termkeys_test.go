@@ -175,3 +175,101 @@ func TestTermIndexInjectedThroughProxy(t *testing.T) {
 		t.Fatalf("token 應原樣轉發：%q", w.Body.String())
 	}
 }
+
+// tmuxCalls 回傳 metaTmux 收到的、會改變 pane 的指令（send-keys／copy-mode）。
+func (f *metaTmux) tmuxCalls() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []string
+	for _, c := range f.calls {
+		if c[0] == "send-keys" || c[0] == "copy-mode" {
+			out = append(out, strings.Join(c, " "))
+		}
+	}
+	return out
+}
+
+func TestScrollAPIByPaneState(t *testing.T) {
+	cases := []struct {
+		name, state, body, want string
+		code                    int
+	}{
+		{"Claude 翻頁上", "", `{"session":"plain","action":"page-up"}`, "send-keys -t $6 PPage", 204},
+		{"Claude 翻頁下帶 count 1", "", `{"session":"plain","action":"page-down","count":1}`, "send-keys -t $6 NPage", 204},
+		{"Claude 逐列上 3", "", `{"session":"plain","action":"line-up","count":3}`, "send-keys -t $6 -l " + strings.Repeat("\x1b[<64;51;21M", 3), 204},
+		{"Codex 逐列下", "1\t0\t0\t0\t\t1\t100\t40\tcodex\n", `{"session":"plain","action":"line-down","count":2}`, "send-keys -t $6 -l " + strings.Repeat("\x1b[<65;51;21M", 2), 204},
+		{"全螢幕無滑鼠回報逐列＝409 不送", "1\t0\t0\t0\t\t0\t80\t24\tvim\n", `{"session":"plain","action":"line-up","count":1}`, "", 409},
+		{"shell 往上進 copy-mode", "0\t0\t0\t0\t\t500\t100\t40\tzsh\n", `{"session":"plain","action":"page-up"}`, "copy-mode -e -t $6 ; send-keys -t $6 -X page-up", 204},
+		{"shell 在底部往下不動作", "0\t0\t0\t0\t\t500\t100\t40\tzsh\n", `{"session":"plain","action":"line-down","count":5}`, "", 204},
+		{"其他 tmux 模式＝409", "0\t0\t0\t1\ttree-mode\t500\t100\t40\tzsh\n", `{"session":"plain","action":"page-up"}`, "", 409},
+	}
+	for _, c := range cases {
+		s, mt := newMetaServer(t)
+		mt.scroll = c.state
+		w := postTo(s.UIHandler(), "/api/sessions/scroll", c.body, nil)
+		if w.Code != c.code {
+			t.Errorf("%s：%d %s，應為 %d", c.name, w.Code, w.Body.String(), c.code)
+		}
+		if got := strings.Join(mt.tmuxCalls(), ","); got != c.want {
+			t.Errorf("%s：送出 %q，應為 %q", c.name, got, c.want)
+		}
+	}
+}
+
+func TestScrollAPIRejects(t *testing.T) {
+	s, mt := newMetaServer(t)
+	h := s.UIHandler()
+	cases := []struct {
+		body string
+		code int
+	}{
+		{`{"session":"plain","action":"hello"}`, 400},
+		{`{"session":"plain","action":"PageUpX"}`, 400},
+		{`{"session":"plain","action":"\"; ls"}`, 400},
+		{`{"session":"plain","action":"page-up;"}`, 400},
+		{`{"session":"plain","action":"PPage"}`, 400},
+		{`{"session":"plain","action":""}`, 400},
+		{`{"session":"plain","key":"page-up"}`, 400},
+		{`{"session":"plain","action":"page-up","count":2}`, 400},
+		{`{"session":"plain","action":"line-up"}`, 400},
+		{`{"session":"plain","action":"line-up","count":0}`, 400},
+		{`{"session":"plain","action":"line-up","count":-1}`, 400},
+		{`{"session":"plain","action":"line-down","count":31}`, 400},
+		{`{"session":"plain","action":"line-down","count":1.5}`, 400},
+		{`{"session":"plain","action":"line-down","count":"3"}`, 400},
+		{`{"session":"plain","action":"line-down","count":99999999999999999999}`, 400},
+		{`{"session":"plain","action":"page-up","text":"hello"}`, 400},
+		{`{"session":"plain;ls","action":"page-up"}`, 400},
+		{`{"session":"=plain","action":"page-up"}`, 400},
+		{`{"session":"$6","action":"page-up"}`, 400},
+		{`{"session":"pla","action":"page-up"}`, 404},
+		{`{"session":"aiuse","action":"page-up"}`, 404},
+	}
+	for _, c := range cases {
+		w := postTo(h, "/api/sessions/scroll", c.body, nil)
+		if w.Code != c.code {
+			t.Errorf("%s → %d %s，應為 %d", c.body, w.Code, w.Body.String(), c.code)
+		}
+		if strings.Contains(w.Body.String(), "tmux ") || strings.Contains(w.Body.String(), "zsh") {
+			t.Errorf("回應不得帶 tmux 內容：%s", w.Body.String())
+		}
+	}
+	for _, hdr := range []map[string]string{
+		{"Cookie": "none"},
+		{"X-Dev-Console": ""},
+		{"Origin": "http://evil.example"},
+		{"Origin": ""},
+		{"Content-Type": "text/plain"},
+	} {
+		if w := postTo(h, "/api/sessions/scroll", `{"session":"plain","action":"page-up"}`, hdr); w.Code != http.StatusForbidden && w.Code != http.StatusUnauthorized {
+			t.Errorf("%v → %d，應為 401/403", hdr, w.Code)
+		}
+	}
+	if got := mt.tmuxCalls(); len(got) != 0 {
+		t.Fatalf("被拒的請求不得送鍵或進 copy-mode：%v", got)
+	}
+	// 捲動動作不可借道既有的按鍵 API。
+	if w := postTo(h, "/api/sessions/keys", `{"session":"plain","key":"page-up"}`, nil); w.Code != 400 {
+		t.Fatalf("keys API 不應接受捲動動作：%d", w.Code)
+	}
+}

@@ -124,6 +124,7 @@ func (s *Server) UIHandler() http.Handler {
 	mux.HandleFunc("POST /api/sessions/archive", s.requireAuth(s.handleArchive))
 	mux.HandleFunc("POST /api/sessions/unarchive", s.requireAuth(s.handleUnarchive))
 	mux.HandleFunc("POST /api/sessions/keys", s.requireAuth(s.handleKeys))
+	mux.HandleFunc("POST /api/sessions/scroll", s.requireAuth(s.handleScroll))
 	mux.HandleFunc("GET /api/term/health", s.requireAuth(s.handleTermHealth))
 	mux.Handle("/term/", s.requireAuth(s.handleTerm()))
 	return s.securityHeaders(mux)
