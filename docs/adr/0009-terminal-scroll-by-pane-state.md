@@ -29,7 +29,16 @@
   1. pane 在 tmux copy-mode：用 copy-mode 指令（`send-keys -X page-up|page-down`、`-X -N n scroll-up|scroll-down`），不送任何位元組給程式。在其他 tmux 模式（tree-mode 等）回 409。
   2. alternate screen：翻頁送 `PPage`／`NPage`；逐列送 SGR 滾輪序列 ×count，座標取 pane 中央。只有程式開了 SGR 滑鼠回報、或 `pane_current_command` 在已實測名單（目前只有 `codex`）時才送，否則回 409 不送——vim、less 這類程式收到同樣的位元組可能當成按鍵或文字。
   3. 一般畫面（shell）：往上捲且有 scrollback 時以 `copy-mode -e ; send-keys -X …` 同一次呼叫進入 copy-mode 並捲動，捲回底部自動離開；往下捲（已在底部）或沒有 scrollback 時不動作、回 204。
-- **前端**：▲／▼ 送翻頁，走既有送出佇列。手指滑動在 capture 階段監聽 `#terminal-container` 的觸控事件：單指、垂直位移超過約 10 個裝置像素才算滑動（之前不 `preventDefault`，輕點照常聚焦）；之後以 xterm 實際列高（`.xterm-screen` 高 ÷ `term.rows`，CSS px）換算列數，與觸控座標同一個座標系，頁面縮放後仍是「手指移一列、內容移一列」；累積的列數在佇列空出來時合併成一個請求（一次最多 30 列）。偏橫向的拖動、多指一律放給瀏覽器；沒有慣性。滑鼠事件完全不處理。
+- **讀旗標與送出原子化**：先以 `display-message` 讀旗標（含 `pane_id`）選送法，但真正送出是單一次 tmux 呼叫
+  `if-shell -F -t $N '<條件>' '<指令> ; display-message -p dc-scroll-ok' 'display-message -p dc-scroll-skip'`。
+  條件把「選這種送法的理由」再寫成 tmux format（`pane_id` 仍是 session 的作用中 pane、是否在 mode、`alternate_on`、
+  SGR 滑鼠或 `pane_current_command==codex`、shell 是否有 `history_size`），由 tmux server 在同一個指令內重新判斷並執行，
+  中間不會插入其他指令。條件不成立時 tmux 回 `dc-scroll-skip`，API 回 409「畫面剛改變」，pane 收不到任何位元組。
+  這擋住「讀到全螢幕＋滑鼠回報後程式剛好結束，滾輪序列變成 shell 提示列殘字」與「兩次呼叫之間切了視窗，送到別的 pane」。
+  滾輪序列以 `send-keys -H <hex>` 送，避開 tmux 指令字串裡 ESC 與引號的跳脫；指令串只由常數、已驗證的 `%N` 與整數組成。
+  剩下的時間窗只有「條件成立 → 程式在 tmux 把位元組寫進 pty 之後、讀取之前切換模式」這種程式內部的競態，tmux 端無從得知，
+  與使用者在桌機上滾輪的情況相同。
+- **前端**：▲／▼ 送翻頁，走既有送出佇列。手指滑動在 capture 階段監聽 `#terminal-container` 的觸控事件：單指、垂直位移超過約 10 個裝置像素才算滑動（之前不 `preventDefault`，輕點照常聚焦）；之後以 xterm 實際列高（`.xterm-screen` 高 ÷ `term.rows`，CSS px）換算列數，與觸控座標同一個座標系，頁面縮放後仍是「手指移一列、內容移一列」；累積的列數在佇列空出來時合併成一個請求（一次最多 30 列）。後端回 409 或送出失敗時，這次手勢作廢：丟掉剩下的列數、之後的 touchmove 不再累加與送出（仍攔住頁面平移），錯誤訊息一個手勢只顯示一次，下一次 touchstart 才重新開始。偏橫向的拖動、多指一律放給瀏覽器；沒有慣性。滑鼠事件完全不處理。
 
 ## 考慮過的其他做法
 

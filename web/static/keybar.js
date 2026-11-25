@@ -219,7 +219,9 @@
   // ---- 手指上下滑捲動 ----
   // 待送的列數：正＝往上（看更早），負＝往下。滑動期間只累加，佇列空出來時合併成一個請求送出，
   // 手指移得比請求快也不會堆出一長串請求。
+  // pendingFrom 是這些列數所屬的手勢：送出失敗時把它作廢。
   let pendingLines = 0;
+  let pendingFrom = null;
   let flushQueued = false;
   const flushScroll = () => {
     if (flushQueued || pendingLines === 0) return;
@@ -229,9 +231,15 @@
       const n = Math.max(-MAX_SCROLL_LINES, Math.min(MAX_SCROLL_LINES, pendingLines));
       if (n === 0) return;
       pendingLines -= n;
+      const gesture = pendingFrom;
       const ok = await post("/api/sessions/scroll", { action: n > 0 ? "line-up" : "line-down", count: Math.abs(n) }, "捲動");
-      // 失敗（例如畫面不支援）就丟掉剩下的列數，不重複送、不重複跳錯誤。
-      if (!ok) pendingLines = 0;
+      if (!ok) {
+        // 失敗（例如畫面不支援、畫面剛改變）：這次手勢作廢，丟掉剩下的列數，之後的 touchmove 不再累加與送出，
+        // 錯誤訊息一個手勢只出現一次；下一次 touchstart 才重新開始。
+        if (gesture) gesture.dead = true;
+        if (pendingFrom === gesture) pendingLines = 0;
+        return;
+      }
       flushScroll();
     });
   };
@@ -260,7 +268,7 @@
       // 多指（縮放）不處理；只管終端機區（按鍵列不在 #terminal-container 內）。
       if (e.touches.length !== 1 || !inTerminal(e.target)) return;
       const p = e.touches[0];
-      swipe = { x0: p.clientX, y0: p.clientY, base: 0, active: false, sent: 0, line: linePx(), threshold: SWIPE_START_DEVICE_PX * cssPerDevicePx() };
+      swipe = { x0: p.clientX, y0: p.clientY, base: 0, active: false, dead: false, sent: 0, line: linePx(), threshold: SWIPE_START_DEVICE_PX * cssPerDevicePx() };
     },
     { capture: true, passive: true },
   );
@@ -289,9 +297,12 @@
       // 已經在捲動：不讓瀏覽器平移頁面，也不讓 xterm 自己處理這次觸控。
       e.preventDefault();
       e.stopPropagation();
+      // 作廢的手勢：照樣攔住（不讓頁面突然開始平移），但不再累加與送出。
+      if (swipe.dead) return;
       const lines = Math.trunc((p.clientY - swipe.base) / swipe.line);
       if (lines !== swipe.sent) {
         pendingLines += lines - swipe.sent;
+        pendingFrom = swipe;
         swipe.sent = lines;
         flushScroll();
       }

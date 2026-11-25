@@ -213,13 +213,14 @@ TS_API_TOKEN=... scripts/tailscale-acl.sh --src you@example.com --ip 100.x.y.z -
   - 捲到底：用 `▼` 或手指往上滑回去。
   - 捲動位置是程式自己記的：手機捲上去後，Mac 端 attach 同一個 session 也會看到同樣的畫面。
   - 普通 shell（不是全螢幕程式）：往上捲時進入 tmux copy-mode（`copy-mode -e`），捲回底部自動離開；在 copy-mode 中打字會被 copy-mode 吃掉，按 `Esc`（tmux 預設 emacs 鍵位）或捲到底即可離開。在底部往下捲不做任何事。
+  - 捲動回 409（畫面不支援或剛改變）時，這次手指滑動就停止送出，錯誤只顯示一次；手指放開再滑一次即可。
   - 其他沒開滑鼠回報的全螢幕程式（例如 vim、less）：`▲`／`▼` 送 PageUp／PageDown；手指滑動不送（回 409、按鍵列顯示「捲動沒送出」），避免把滾輪序列當成文字塞進程式。
 - **掛載方式**：dev-console 反代 ttyd 的 index 頁時，在 `</head>` 前插入 `/keybar.css`、`/keybar.js`（靜態檔，不含資料）。瀏覽器接受 gzip 時，反代讓 Go 的 Transport 透明解壓、改寫後再壓回去。找不到 `</head>`（ttyd 改版）就原樣回傳並寫 log：終端機照常可用，只是沒有按鍵列。`/term/?arg=` 網址不變。
 
 | API | body | 說明 |
 |---|---|---|
 | `POST /api/sessions/keys` | `{"session":"aiuse-claude-work-…","key":"down"}` | `key` 只收 `esc`、`tab`、`btab`、`up`、`down`、`left`、`right`、`enter`、`1`～`4`、`ctrl-c`（對應 tmux 鍵名 `Escape`、`Tab`、`BTab`、`Up`…、`C-c`），其他一律 400，不送任意文字。`session` 必須符合名稱規則（含 `;`、`:`、`=` 等 400），並在當下的 `list-sessions` 有**完全同名**的 session（否則 404，不會前綴比對到別的 session）；以該 session 的 `$N` 執行 `tmux send-keys -t $N <鍵名>`，送到它目前作用中的 pane。成功 204；回應不帶任何 tmux 輸出。需 cookie＋寫入 API 標頭（缺任一 403） |
-| `POST /api/sessions/scroll` | `{"session":"…","action":"page-up"}`、`{"session":"…","action":"line-up","count":3}` | `action` 只收 `page-up`、`page-down`（按鍵列；`count` 省略或 1）與 `line-up`、`line-down`（手指滑動；`count` 必填，1～30 的整數），其他、0、負數、小數、超過 30 一律 400。`session` 驗證與目標規則同上。後端先以 `display-message` 讀 pane 的 `alternate_on`、`mouse_any_flag`、`mouse_sgr_flag`、`pane_in_mode`、`history_size` 等旗標再決定送什麼：全螢幕程式翻頁送 `PPage`／`NPage`，逐列送 SGR 滾輪序列 `ESC[<64;x;yM`（上）／`ESC[<65;x;yM`（下）×count（座標取 pane 中央，序列由伺服器常數組成，只在程式開了 SGR 滑鼠回報、或是已實測的 `codex` 時才送）；普通 shell 往上用 `copy-mode -e`＋`send-keys -X`；tmux copy-mode 中直接用 copy-mode 的捲動指令。不支援時回 409 且不送任何東西。成功 204 |
+| `POST /api/sessions/scroll` | `{"session":"…","action":"page-up"}`、`{"session":"…","action":"line-up","count":3}` | `action` 只收 `page-up`、`page-down`（按鍵列；`count` 省略或 1）與 `line-up`、`line-down`（手指滑動；`count` 必填，1～30 的整數），其他、0、負數、小數、超過 30 一律 400。`session` 驗證與目標規則同上。後端先以 `display-message` 讀 pane 的 `alternate_on`、`mouse_any_flag`、`mouse_sgr_flag`、`pane_in_mode`、`history_size` 等旗標再決定送什麼：全螢幕程式翻頁送 `PPage`／`NPage`，逐列送 SGR 滾輪序列 `ESC[<64;x;yM`（上）／`ESC[<65;x;yM`（下）×count（座標取 pane 中央，序列由伺服器常數組成，只在程式開了 SGR 滑鼠回報、或是已實測的 `codex` 時才送）；普通 shell 往上用 `copy-mode -e`＋`send-keys -X`；tmux copy-mode 中直接用 copy-mode 的捲動指令。真正送出是一次 `if-shell -F` 呼叫：tmux server 在同一個指令內重新確認作用中 pane 與旗標沒變才執行，變了就不送、回 409「畫面剛改變」。不支援時也回 409 且不送任何東西。成功 204 |
 
 ### 暱稱與封存（ADR 0004）
 

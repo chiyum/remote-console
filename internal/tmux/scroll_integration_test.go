@@ -148,6 +148,94 @@ func TestScrollRealTmuxAlternateScreen(t *testing.T) {
 	}
 }
 
+// TestAtomicScrollSkipsWhenPaneChangedAfterRead 模擬「讀到全螢幕＋SGR 滑鼠 → 程式剛好離開全螢幕、回到行模式」：
+// 用讀到的舊狀態送出時，tmux 端的條件不成立，pane 一個位元組都收不到。
+func TestAtomicScrollSkipsWhenPaneChangedAfterRead(t *testing.T) {
+	r := newIsoTmux(t)
+	ctx := context.Background()
+	// 程式先進全螢幕並開 SGR 滑鼠回報；收到一行輸入後關掉滑鼠回報、離開全螢幕，之後用 cat -v 印出收到的位元組。
+	script := "printf '\\033[?1049h\\033[?1000h\\033[?1006h'; stty -echo; read x; printf '\\033[?1006l\\033[?1000l\\033[?1049l'; exec cat -v"
+	if _, err := r.Run(ctx, "new-session", "-d", "-s", "tui", "-x", "80", "-y", "24", "--", "sh", "-c", script); err != nil {
+		t.Fatal(err)
+	}
+	id := strings.TrimSpace(mustRun(t, r, "display-message", "-p", "-t", "=tui:", "#{session_id}"))
+	flags := func() string {
+		return strings.TrimSpace(mustRun(t, r, "display-message", "-p", "-t", id, "#{alternate_on}#{mouse_any_flag}#{mouse_sgr_flag}"))
+	}
+	waitFor(t, "進入全螢幕＋SGR 滑鼠", func() bool { return flags() == "111" })
+	st, err := ParseScrollState(mustRun(t, r, "display-message", "-p", "-t", id, scrollStateFmt))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale, err := PlanScroll(st, ScrollLineUp, 3)
+	if err != nil || stale == nil || stale.Method != "sgr-wheel" {
+		t.Fatalf("讀到的狀態應選 SGR 滾輪：%+v %v", stale, err)
+	}
+	pageStale, _ := PlanScroll(st, ScrollPageUp, 1)
+	// 畫面在送出前改變：程式離開全螢幕、關掉滑鼠回報。
+	mustRun(t, r, "send-keys", "-t", id, "Enter")
+	waitFor(t, "離開全螢幕", func() bool { return flags() == "000" })
+
+	for _, plan := range []*ScrollPlan{stale, pageStale} {
+		if out := strings.TrimSpace(mustRun(t, r, AtomicScrollArgs(id, plan)...)); out != scrollSkipMark {
+			t.Fatalf("條件已不成立應回 skip：%q（%s）", out, plan.Method)
+		}
+	}
+	// 送一行換行讓 cat -v 把緩衝的內容吐出來：不得有任何滾輪序列或 PageUp（^[[5~）。
+	mustRun(t, r, "send-keys", "-t", id, "-l", "END")
+	mustRun(t, r, "send-keys", "-t", id, "Enter")
+	waitFor(t, "cat 印出 END", func() bool { return strings.Contains(mustRun(t, r, "capture-pane", "-p", "-t", id), "END") })
+	if cap := mustRun(t, r, "capture-pane", "-p", "-t", id); strings.Contains(cap, "^[") || strings.TrimSpace(cap) != "END" {
+		t.Fatalf("條件不成立時 pane 不得收到任何位元組：%q", cap)
+	}
+}
+
+// TestAtomicScrollSkipsWhenActivePaneChanged：計畫鎖定的 pane 已不是 session 的作用中 pane（切了視窗）時不送，
+// 兩個 pane 都收不到東西；換回正確的計畫後送出的位元組完全正確。
+func TestAtomicScrollSkipsWhenActivePaneChanged(t *testing.T) {
+	r := newIsoTmux(t)
+	ctx := context.Background()
+	prog := "printf '\\033[?1049h\\033[?1000h\\033[?1006h'; stty -echo; exec cat -v"
+	if _, err := r.Run(ctx, "new-session", "-d", "-s", "two", "-x", "80", "-y", "24", "--", "sh", "-c", prog); err != nil {
+		t.Fatal(err)
+	}
+	id := strings.TrimSpace(mustRun(t, r, "display-message", "-p", "-t", "=two:", "#{session_id}"))
+	first := strings.TrimSpace(mustRun(t, r, "display-message", "-p", "-t", id, "#{pane_id}"))
+	waitFor(t, "第一個視窗開 SGR 滑鼠", func() bool {
+		return strings.TrimSpace(mustRun(t, r, "display-message", "-p", "-t", first, "#{mouse_sgr_flag}")) == "1"
+	})
+	st, err := ParseScrollState(mustRun(t, r, "display-message", "-p", "-t", id, scrollStateFmt))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale, _ := PlanScroll(st, ScrollLineDown, 2)
+	// 讀完旗標後使用者開了新視窗（新視窗成為作用中），新視窗裡同樣是開了 SGR 滑鼠的程式。
+	second := strings.TrimSpace(mustRun(t, r, "new-window", "-P", "-F", "#{pane_id}", "-t", id, "--", "sh", "-c", prog))
+	waitFor(t, "新視窗開 SGR 滑鼠", func() bool {
+		return strings.TrimSpace(mustRun(t, r, "display-message", "-p", "-t", second, "#{mouse_sgr_flag}")) == "1"
+	})
+	if out := strings.TrimSpace(mustRun(t, r, AtomicScrollArgs(id, stale)...)); out != scrollSkipMark {
+		t.Fatalf("作用中 pane 已換應回 skip：%q", out)
+	}
+	// 以當下狀態重新規劃（目標是新的作用中 pane）：送出的位元組完全正確，舊 pane 收不到。
+	if _, err := SendScroll(ctx, r, id, ScrollLineDown, 2); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{first, second} {
+		mustRun(t, r, "send-keys", "-t", p, "-l", "END")
+		mustRun(t, r, "send-keys", "-t", p, "Enter")
+	}
+	waitFor(t, "兩個 pane 都印出 END", func() bool {
+		return strings.Contains(mustRun(t, r, "capture-pane", "-p", "-t", first), "END") && strings.Contains(mustRun(t, r, "capture-pane", "-p", "-t", second), "END")
+	})
+	if cap := strings.TrimSpace(mustRun(t, r, "capture-pane", "-p", "-t", first)); cap != "END" {
+		t.Fatalf("舊 pane 不得收到任何位元組：%q", cap)
+	}
+	if cap := strings.TrimSpace(mustRun(t, r, "capture-pane", "-p", "-t", second)); cap != "^[[<65;41;13M^[[<65;41;13MEND" {
+		t.Fatalf("新 pane 應剛好收到兩個滾輪下：%q", cap)
+	}
+}
+
 func mustRun(t *testing.T, r Runner, args ...string) string {
 	t.Helper()
 	out, err := r.Run(context.Background(), args...)

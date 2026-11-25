@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os/exec"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -353,6 +354,10 @@ var ErrScrollUnsupported = errors.New("目前畫面不支援這種捲動")
 // 其他沒開滑鼠回報的程式（vim、less…）收到同樣位元組可能當成按鍵或文字，所以不在名單就不送。
 var sgrWheelCommands = map[string]bool{"codex": true}
 
+// ErrScrollStateChanged 表示讀完 pane 旗標到送出之間畫面變了（程式結束、切了視窗、進出 copy-mode），
+// tmux 端的條件不再成立，所以什麼都沒送。
+var ErrScrollStateChanged = errors.New("畫面剛改變，這次捲動沒有送出")
+
 // PaneScrollState 是決定捲動方式所需的 pane 旗標（display-message 取得）。
 type PaneScrollState struct {
 	Alternate bool   // alternate_on：全螢幕程式（Claude／Codex）自己管捲動，tmux 沒有 scrollback 可捲
@@ -363,18 +368,21 @@ type PaneScrollState struct {
 	History   int    // history_size：tmux scrollback 列數
 	Width     int
 	Height    int
+	PaneID    string // pane_id（%N）：送出時鎖定這個 pane，並在 tmux 端確認它仍是作用中的 pane
 	Command   string // pane_current_command
 }
 
-const scrollStateFmt = "#{alternate_on}\t#{mouse_any_flag}\t#{mouse_sgr_flag}\t#{pane_in_mode}\t#{pane_mode}\t#{history_size}\t#{pane_width}\t#{pane_height}\t#{pane_current_command}"
+const scrollStateFmt = "#{alternate_on}\t#{mouse_any_flag}\t#{mouse_sgr_flag}\t#{pane_in_mode}\t#{pane_mode}\t#{history_size}\t#{pane_width}\t#{pane_height}\t#{pane_id}\t#{pane_current_command}"
+
+var paneIDRe = regexp.MustCompile(`^%[0-9]{1,9}$`)
 
 // ParseScrollState 解析 scrollStateFmt 的輸出。
 func ParseScrollState(out string) (PaneScrollState, error) {
-	f := strings.SplitN(strings.TrimRight(out, "\n"), "\t", 9)
-	if len(f) != 9 {
+	f := strings.SplitN(strings.TrimRight(out, "\n"), "\t", 10)
+	if len(f) != 10 || !paneIDRe.MatchString(f[8]) {
 		return PaneScrollState{}, fmt.Errorf("pane 狀態格式不對：%q", out)
 	}
-	st := PaneScrollState{Alternate: f[0] == "1", MouseAny: f[1] == "1", MouseSGR: f[2] == "1", InMode: f[3] == "1", Mode: f[4], Command: f[8]}
+	st := PaneScrollState{Alternate: f[0] == "1", MouseAny: f[1] == "1", MouseSGR: f[2] == "1", InMode: f[3] == "1", Mode: f[4], PaneID: f[8], Command: f[9]}
 	st.History, _ = strconv.Atoi(f[5])
 	st.Width, _ = strconv.Atoi(f[6])
 	st.Height, _ = strconv.Atoi(f[7])
@@ -396,43 +404,96 @@ func ValidScroll(action string, count int) (int, bool) {
 	return 0, false
 }
 
-// PlanScroll 依 pane 當下旗標決定要下哪個 tmux 指令（argv），純函式方便測試。回傳 nil 表示不需要動作（例如已在底部）。
+// ScrollPlan 是一次捲動要在 tmux 端原子執行的內容：Cond 是 tmux format 條件（對 session 的作用中 pane 求值），
+// Cmds 是條件成立時執行的 tmux 指令串。兩者都只由常數、pane id（已驗證 %N）與整數組成，不含使用者字串。
+type ScrollPlan struct {
+	Cond   string
+	Cmds   string
+	Method string
+}
+
+// sgrWheelCond 是「程式會解析 SGR 滾輪」的 tmux format：開了 SGR 滑鼠回報，或是已實測名單內的程式。
+func sgrWheelCond() string {
+	c := "#{&&:#{mouse_any_flag},#{mouse_sgr_flag}}"
+	for _, name := range sortedKeys(sgrWheelCommands) {
+		c = "#{||:" + c + ",#{==:#{pane_current_command}," + name + "}}"
+	}
+	return c
+}
+
+func sortedKeys(m map[string]bool) []string {
+	var out []string
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// allOf 把多個 format 條件以 && 串起來。
+func allOf(conds ...string) string {
+	c := conds[len(conds)-1]
+	for i := len(conds) - 2; i >= 0; i-- {
+		c = "#{&&:" + conds[i] + "," + c + "}"
+	}
+	return c
+}
+
+// hexBytes 把位元組寫成 send-keys -H 的參數：避開 tmux 指令字串裡 ESC 與引號的跳脫問題。
+func hexBytes(b string) string {
+	parts := make([]string, len(b))
+	for i := 0; i < len(b); i++ {
+		parts[i] = fmt.Sprintf("%02x", b[i])
+	}
+	return strings.Join(parts, " ")
+}
+
+// PlanScroll 依讀到的 pane 旗標決定送法，純函式方便測試。回傳 nil 表示不需要動作（例如已在底部）。
 //
-//	tmux copy-mode 中：用 copy-mode 自己的捲動指令（send-keys -X），不送任何位元組給程式。
+//	tmux copy-mode 中：用 copy-mode 自己的捲動指令（send-keys -X），不送任何位元組給程式；其他 tmux 模式不支援。
 //	全螢幕程式：翻頁送 PPage／NPage（Claude、Codex 實測都有效）；逐列送 SGR 滾輪序列，
-//	            只在程式開了 SGR 滑鼠回報、或在已實測的 sgrWheelCommands 名單時才送。序列由常數與 pane 尺寸組成，不含使用者字串。
+//	            只在程式開了 SGR 滑鼠回報、或在已實測的 sgrWheelCommands 名單時才送。
 //	一般 shell（非全螢幕）：往上捲進入 copy-mode -e（捲回底部自動離開），往下捲且不在 copy-mode＝已在底部，不動作。
-func PlanScroll(st PaneScrollState, sessionID, action string, count int) ([][]string, string, error) {
+//
+// 每個計畫的 Cond 都把「這次選這種送法的理由」再寫成 tmux 條件（含 pane id 仍是作用中 pane），
+// 送出前由 tmux server 在同一個指令內重新判斷，讀旗標之後畫面變了就不送。
+func PlanScroll(st PaneScrollState, action string, count int) (*ScrollPlan, error) {
+	if !paneIDRe.MatchString(st.PaneID) {
+		return nil, fmt.Errorf("pane id 格式不合法：%q", st.PaneID)
+	}
 	up := action == ScrollPageUp || action == ScrollLineUp
 	page := action == ScrollPageUp || action == ScrollPageDown
-	copyCmd := func() []string {
+	p := st.PaneID
+	samePane := "#{==:#{pane_id}," + p + "}"
+	copyCmd := func() string {
 		switch {
 		case page && up:
-			return []string{"send-keys", "-t", sessionID, "-X", "page-up"}
+			return "send-keys -t " + p + " -X page-up"
 		case page:
-			return []string{"send-keys", "-t", sessionID, "-X", "page-down"}
+			return "send-keys -t " + p + " -X page-down"
 		case up:
-			return []string{"send-keys", "-t", sessionID, "-X", "-N", strconv.Itoa(count), "scroll-up"}
+			return "send-keys -t " + p + " -X -N " + strconv.Itoa(count) + " scroll-up"
 		default:
-			return []string{"send-keys", "-t", sessionID, "-X", "-N", strconv.Itoa(count), "scroll-down"}
+			return "send-keys -t " + p + " -X -N " + strconv.Itoa(count) + " scroll-down"
 		}
 	}
 	if st.InMode {
 		if st.Mode != "copy-mode" {
-			return nil, "", ErrScrollUnsupported
+			return nil, ErrScrollUnsupported
 		}
-		return [][]string{copyCmd()}, "copy-mode", nil
+		return &ScrollPlan{Cond: allOf(samePane, "#{==:#{pane_mode},copy-mode}"), Cmds: copyCmd(), Method: "copy-mode"}, nil
 	}
+	notInMode := "#{?pane_in_mode,0,1}"
 	if st.Alternate {
 		if page {
 			key := "NPage"
 			if up {
 				key = "PPage"
 			}
-			return [][]string{{"send-keys", "-t", sessionID, key}}, "page-key", nil
+			return &ScrollPlan{Cond: allOf(samePane, notInMode, "#{alternate_on}"), Cmds: "send-keys -t " + p + " " + key, Method: "page-key"}, nil
 		}
 		if !(st.MouseAny && st.MouseSGR) && !sgrWheelCommands[st.Command] {
-			return nil, "", ErrScrollUnsupported
+			return nil, ErrScrollUnsupported
 		}
 		// 滾輪事件座標取 pane 中央（1 起算）；64＝滾輪上、65＝滾輪下。
 		btn := 65
@@ -440,16 +501,36 @@ func PlanScroll(st PaneScrollState, sessionID, action string, count int) ([][]st
 			btn = 64
 		}
 		ev := fmt.Sprintf("\x1b[<%d;%d;%dM", btn, max(1, st.Width/2+1), max(1, st.Height/2+1))
-		return [][]string{{"send-keys", "-t", sessionID, "-l", strings.Repeat(ev, count)}}, "sgr-wheel", nil
+		return &ScrollPlan{
+			Cond:   allOf(samePane, notInMode, "#{alternate_on}", sgrWheelCond()),
+			Cmds:   "send-keys -t " + p + " -H " + hexBytes(strings.Repeat(ev, count)),
+			Method: "sgr-wheel",
+		}, nil
 	}
 	if !up || st.History == 0 {
-		return nil, "noop", nil
+		return nil, nil
 	}
-	// 進 copy-mode 與第一次捲動用 tmux 的 ";" 串在同一次呼叫，中間不會有別的輸入插進來。
-	return [][]string{append([]string{"copy-mode", "-e", "-t", sessionID, ";"}, copyCmd()...)}, "copy-mode", nil
+	return &ScrollPlan{
+		Cond:   allOf(samePane, notInMode, "#{?alternate_on,0,1}", "#{?history_size,1,0}"),
+		Cmds:   "copy-mode -e -t " + p + " ; " + copyCmd(),
+		Method: "copy-mode",
+	}, nil
+}
+
+// 原子送出時 tmux 回傳的標記：條件成立並執行完回 ok，不成立回 skip。
+const (
+	scrollOKMark   = "dc-scroll-ok"
+	scrollSkipMark = "dc-scroll-skip"
+)
+
+// AtomicScrollArgs 組出單一次 tmux 呼叫：if-shell -F 在 server 內對 session 的作用中 pane 求值條件並執行，
+// 中間不會插入其他指令，避免「讀到全螢幕＋滑鼠回報 → 程式剛結束 → 滾輪序列變成 shell 殘字」或送到別的 pane。
+func AtomicScrollArgs(sessionID string, plan *ScrollPlan) []string {
+	return []string{"if-shell", "-F", "-t", sessionID, plan.Cond, plan.Cmds + " ; display-message -p " + scrollOKMark, "display-message -p " + scrollSkipMark}
 }
 
 // SendScroll 對 session id（$N）的作用中 pane 捲動；目標規則同 SendWebKey。回傳實際用的方式（寫 log 用）。
+// 先讀 pane 旗標選送法，再以 AtomicScrollArgs 一次呼叫「重新判斷＋送出」；tmux 回 skip 時回 ErrScrollStateChanged。
 func SendScroll(ctx context.Context, r Runner, sessionID, action string, count int) (string, error) {
 	if !sessionIDRe.MatchString(sessionID) {
 		return "", fmt.Errorf("tmux session id 格式不合法：%q", sessionID)
@@ -466,14 +547,23 @@ func SendScroll(ctx context.Context, r Runner, sessionID, action string, count i
 	if err != nil {
 		return "", err
 	}
-	cmds, method, err := PlanScroll(st, sessionID, action, n)
+	plan, err := PlanScroll(st, action, n)
 	if err != nil {
 		return "", err
 	}
-	for _, c := range cmds {
-		if _, err := r.Run(ctx, c...); err != nil {
-			return method, err
-		}
+	if plan == nil {
+		return "noop", nil
 	}
-	return method, nil
+	res, err := r.Run(ctx, AtomicScrollArgs(sessionID, plan)...)
+	if err != nil {
+		return plan.Method, err
+	}
+	switch strings.TrimSpace(res) {
+	case scrollOKMark:
+		return plan.Method, nil
+	case scrollSkipMark:
+		return plan.Method, ErrScrollStateChanged
+	default:
+		return plan.Method, fmt.Errorf("tmux 回應不符預期：%q", res)
+	}
 }

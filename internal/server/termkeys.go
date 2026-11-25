@@ -81,7 +81,7 @@ type ScrollRequest struct {
 
 // handleScroll 捲動指定 session 的作用中 pane（ADR 0009）。驗證順序與 handleKeys 相同；
 // 實際送什麼由 tmux.PlanScroll 依 pane 當下旗標決定，使用者輸入只會是白名單動作與有上限的整數。
-// 畫面不支援時回 409，不做任何送出。
+// 畫面不支援、或讀旗標後畫面剛改變（tmux 端條件不成立）時回 409，不做任何送出。
 func (s *Server) handleScroll(w http.ResponseWriter, r *http.Request, id Identity) {
 	if !s.csrfOK(w, r) {
 		return
@@ -106,6 +106,10 @@ func (s *Server) handleScroll(w http.ResponseWriter, r *http.Request, id Identit
 	method, err := tmux.SendScroll(r.Context(), s.Tmux, sid, req.Action, n)
 	if errors.Is(err, tmux.ErrScrollUnsupported) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "這個畫面不支援這種捲動"})
+		return
+	}
+	if errors.Is(err, tmux.ErrScrollStateChanged) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "畫面剛改變，這次捲動沒有送出"})
 		return
 	}
 	if err != nil {
