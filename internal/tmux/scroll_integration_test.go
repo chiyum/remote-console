@@ -236,6 +236,65 @@ func TestAtomicScrollSkipsWhenActivePaneChanged(t *testing.T) {
 	}
 }
 
+// TestAtomicScrollCopyModeSkipsWhenModeChanged：shell pane 讀旗標時在 copy-mode，送出前已離開 copy-mode，
+// copy-mode 計畫回 skip、不會重新進入 copy-mode；反過來讀旗標時不在 copy-mode（要進 copy-mode 的計畫），
+// 送出前已被別人帶進 copy-mode，也回 skip、捲動位置不變。
+func TestAtomicScrollCopyModeSkipsWhenModeChanged(t *testing.T) {
+	r := newIsoTmux(t)
+	ctx := context.Background()
+	if _, err := r.Run(ctx, "new-session", "-d", "-s", "cm", "-x", "100", "-y", "40", "--", "sh", "-c", "i=1; while [ $i -le 200 ]; do echo L$i; i=$((i+1)); done; exec cat"); err != nil {
+		t.Fatal(err)
+	}
+	id := strings.TrimSpace(mustRun(t, r, "display-message", "-p", "-t", "=cm:", "#{session_id}"))
+	pos := func() string {
+		return strings.TrimSpace(mustRun(t, r, "display-message", "-p", "-t", id, "#{pane_in_mode}:#{scroll_position}"))
+	}
+	waitFor(t, "輸出 200 行", func() bool { return strings.Contains(mustRun(t, r, "capture-pane", "-p", "-t", id), "L200") })
+	readPlan := func(action string, count int) *ScrollPlan {
+		st, err := ParseScrollState(mustRun(t, r, "display-message", "-p", "-t", id, scrollStateFmt))
+		if err != nil {
+			t.Fatal(err)
+		}
+		plan, err := PlanScroll(st, action, count)
+		if err != nil || plan == nil || plan.Method != "copy-mode" {
+			t.Fatalf("應選 copy-mode：%+v %v", plan, err)
+		}
+		return plan
+	}
+
+	// 在 copy-mode 中讀旗標 → 送出前離開 copy-mode。
+	if _, err := SendScroll(ctx, r, id, ScrollLineUp, 5); err != nil || pos() != "1:5" {
+		t.Fatalf("前置：應在 copy-mode 位置 5：%v %s", err, pos())
+	}
+	inMode := readPlan(ScrollLineUp, 3)
+	mustRun(t, r, "send-keys", "-t", id, "-X", "cancel")
+	if pos() != "0:" {
+		t.Fatalf("前置：應已離開 copy-mode：%s", pos())
+	}
+	if out := strings.TrimSpace(mustRun(t, r, AtomicScrollArgs(id, inMode)...)); out != scrollSkipMark {
+		t.Fatalf("已離開 copy-mode 應回 skip：%q", out)
+	}
+	if pos() != "0:" {
+		t.Fatalf("回 skip 後不得重新進入 copy-mode：%s", pos())
+	}
+
+	// 不在 copy-mode 時讀旗標（計畫是進 copy-mode）→ 送出前已被帶進 copy-mode 並捲到 7。
+	enter := readPlan(ScrollPageUp, 1)
+	mustRun(t, r, "copy-mode", "-t", id)
+	mustRun(t, r, "send-keys", "-t", id, "-X", "-N", "7", "scroll-up")
+	if out := strings.TrimSpace(mustRun(t, r, AtomicScrollArgs(id, enter)...)); out != scrollSkipMark {
+		t.Fatalf("已在 copy-mode 時「進 copy-mode」的計畫應回 skip：%q", out)
+	}
+	if pos() != "1:7" {
+		t.Fatalf("回 skip 後捲動位置不得改變：%s", pos())
+	}
+	// cat 沒有收到任何位元組（copy-mode 指令本來就不送給程式；這裡確認沒有誤送）。
+	mustRun(t, r, "send-keys", "-t", id, "-X", "cancel")
+	if cap := mustRun(t, r, "capture-pane", "-p", "-t", id); strings.Contains(cap, "^[") || !strings.Contains(cap, "L200") {
+		t.Fatalf("shell 畫面不得出現跳脫序列：%q", cap)
+	}
+}
+
 func mustRun(t *testing.T, r Runner, args ...string) string {
 	t.Helper()
 	out, err := r.Run(context.Background(), args...)

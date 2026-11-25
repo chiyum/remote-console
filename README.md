@@ -57,7 +57,7 @@ rc-<名稱>（選用，預設不裝）：tmux session 跑 `aiuse claude <profile
 
 - Mac（**只支援 macOS**），已裝 [Homebrew](https://brew.sh)。
 - [Tailscale](https://tailscale.com) App 已登入；要用的手機或另一台電腦也登入同一個 tailnet。
-- tmux 與 ttyd（install.sh 用 brew 自動安裝）、`go`、`jq`（`brew install go jq`）。
+- tmux 與 ttyd（install.sh 用 brew 自動安裝）、`go`、`jq`（`brew install go jq`）。終端機捲動需要 tmux **3.0a 以上**（用到 `#{&&:}`／`#{||:}` 格式運算子〔2.6 起〕與 `send-keys -H`〔CHANGES 記在 3.0，原始碼 tag 3.0a 起確認有〕；本機開發用 3.7c），舊版的症狀見「終端機按鍵列」的捲動段。
 - Claude Code（`claude`）與／或 Codex（`codex`）至少一個。
 - 選用：[aiuse](#兩種模式)（多帳號切換工具，不在本 repo）。沒有它也能裝，會是「直接模式」。
 
@@ -214,6 +214,7 @@ TS_API_TOKEN=... scripts/tailscale-acl.sh --src you@example.com --ip 100.x.y.z -
   - 捲動位置是程式自己記的：手機捲上去後，Mac 端 attach 同一個 session 也會看到同樣的畫面。
   - 普通 shell（不是全螢幕程式）：往上捲時進入 tmux copy-mode（`copy-mode -e`），捲回底部自動離開；在 copy-mode 中打字會被 copy-mode 吃掉，按 `Esc`（tmux 預設 emacs 鍵位）或捲到底即可離開。在底部往下捲不做任何事。
   - 捲動回 409（畫面不支援或剛改變）時，這次手指滑動就停止送出，錯誤只顯示一次；手指放開再滑一次即可。
+  - tmux 版本太舊（未實測，依原始碼推論）：2.6 以前不認得 `#{&&:}`／`#{||:}`，條件展開成空字串、永遠不成立，**每次捲動都回 409「畫面剛改變」**、什麼都不送；2.6～3.0 不支援 `send-keys -H`，翻頁與 shell 捲動正常，但手指滑動（逐列）會回 500「捲動失敗」，log 有 tmux 的錯誤訊息。遇到請升級 tmux（`brew upgrade tmux`）。
   - 其他沒開滑鼠回報的全螢幕程式（例如 vim、less）：`▲`／`▼` 送 PageUp／PageDown；手指滑動不送（回 409、按鍵列顯示「捲動沒送出」），避免把滾輪序列當成文字塞進程式。
 - **掛載方式**：dev-console 反代 ttyd 的 index 頁時，在 `</head>` 前插入 `/keybar.css`、`/keybar.js`（靜態檔，不含資料）。瀏覽器接受 gzip 時，反代讓 Go 的 Transport 透明解壓、改寫後再壓回去。找不到 `</head>`（ttyd 改版）就原樣回傳並寫 log：終端機照常可用，只是沒有按鍵列。`/term/?arg=` 網址不變。
 

@@ -12,7 +12,7 @@ A small web console that lets you watch and drive the Claude Code / Codex sessio
 
 - A Mac with [Homebrew](https://brew.sh).
 - The [Tailscale](https://tailscale.com) app, signed in. Your phone / other computer must be on the same tailnet.
-- tmux and ttyd (installed by `install.sh` via brew), plus `go` and `jq` (`brew install go jq`).
+- tmux and ttyd (installed by `install.sh` via brew), plus `go` and `jq` (`brew install go jq`). Terminal scrolling needs tmux **3.0a or later** (`#{&&:}` / `#{||:}` format operators since 2.6, `send-keys -H` listed under 3.0 in CHANGES and confirmed in the 3.0a source tag; developed on 3.7c). Not tested on older versions, but from the source: before 2.6 the conditions expand to empty, so every scroll returns 409 "screen just changed" and nothing is sent; 2.6–3.0 lack `send-keys -H`, so finger (line) scrolling returns 500 while page scrolling and shell scrolling still work. Upgrade with `brew upgrade tmux`.
 - Claude Code (`claude`) and/or Codex (`codex`).
 - Optional: `aiuse`, a separate multi-account launcher (not part of this repo). Without it you get "direct mode" (see [Two modes](#two-modes)).
 

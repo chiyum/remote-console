@@ -155,8 +155,11 @@
   const sendKey = (key) => enqueue(() => post("/api/sessions/keys", { key }, "按鍵"));
   const sendScroll = (action, count) => enqueue(() => post("/api/sessions/scroll", count ? { action, count } : { action }, "捲動"));
 
+  // ▲／▼ 兩顆包成一組不換行的 flex 子項：按鍵列換行時兩顆永遠相鄰、在同一排。
+  const scrollGroup = document.createElement("span");
+  scrollGroup.className = "dc-kb-group";
   for (const k of KEYS) {
-    bar.append(
+    (k.scroll ? scrollGroup : bar).append(
       makeButton(
         k.label,
         () => {
@@ -169,7 +172,7 @@
       ),
     );
   }
-  bar.append(makeButton("收起", () => setOpen(false), "dc-kb-hide"), msg);
+  bar.append(scrollGroup, makeButton("收起", () => setOpen(false), "dc-kb-hide"), msg);
 
   // 沒有 viewport meta 的 ttyd 頁在手機上以 980px 寬排版再縮小顯示，按鈕依縮放倍率放大，維持手指點得到的大小。
   const scale = () => {
@@ -219,27 +222,32 @@
   // ---- 手指上下滑捲動 ----
   // 待送的列數：正＝往上（看更早），負＝往下。滑動期間只累加，佇列空出來時合併成一個請求送出，
   // 手指移得比請求快也不會堆出一長串請求。
-  // pendingFrom 是這些列數所屬的手勢：送出失敗時把它作廢。
-  let pendingLines = 0;
-  let pendingFrom = null;
+  // 每個手勢各記自己待送的列數（gesture.pending），依先後排隊：前一個手勢的請求還在送時下一個手勢開始滑，
+  // 兩者的列數不會混在一起；某個手勢失敗只丟掉它自己的剩餘，其他手勢照常送。
+  const pendingGestures = [];
   let flushQueued = false;
   const flushScroll = () => {
-    if (flushQueued || pendingLines === 0) return;
+    if (flushQueued) return;
+    while (pendingGestures.length && pendingGestures[0].pending === 0) pendingGestures.shift();
+    if (!pendingGestures.length) return;
     flushQueued = true;
     enqueue(async () => {
       flushQueued = false;
-      const n = Math.max(-MAX_SCROLL_LINES, Math.min(MAX_SCROLL_LINES, pendingLines));
-      if (n === 0) return;
-      pendingLines -= n;
-      const gesture = pendingFrom;
-      const ok = await post("/api/sessions/scroll", { action: n > 0 ? "line-up" : "line-down", count: Math.abs(n) }, "捲動");
-      if (!ok) {
-        // 失敗（例如畫面不支援、畫面剛改變）：這次手勢作廢，丟掉剩下的列數，之後的 touchmove 不再累加與送出，
-        // 錯誤訊息一個手勢只出現一次；下一次 touchstart 才重新開始。
-        if (gesture) gesture.dead = true;
-        if (pendingFrom === gesture) pendingLines = 0;
+      const gesture = pendingGestures[0];
+      if (!gesture || gesture.pending === 0) {
+        flushScroll();
         return;
       }
+      const n = Math.max(-MAX_SCROLL_LINES, Math.min(MAX_SCROLL_LINES, gesture.pending));
+      gesture.pending -= n;
+      const ok = await post("/api/sessions/scroll", { action: n > 0 ? "line-up" : "line-down", count: Math.abs(n) }, "捲動");
+      if (!ok) {
+        // 失敗（例如畫面不支援、畫面剛改變）：這次手勢作廢，丟掉它剩下的列數，之後的 touchmove 不再累加與送出，
+        // 錯誤訊息一個手勢只出現一次；下一次 touchstart 才重新開始。
+        gesture.dead = true;
+        gesture.pending = 0;
+      }
+      // 不論成敗都接著送排在後面的手勢（例如前一個手勢失敗時已經放手的下一個手勢）。
       flushScroll();
     });
   };
@@ -268,7 +276,7 @@
       // 多指（縮放）不處理；只管終端機區（按鍵列不在 #terminal-container 內）。
       if (e.touches.length !== 1 || !inTerminal(e.target)) return;
       const p = e.touches[0];
-      swipe = { x0: p.clientX, y0: p.clientY, base: 0, active: false, dead: false, sent: 0, line: linePx(), threshold: SWIPE_START_DEVICE_PX * cssPerDevicePx() };
+      swipe = { x0: p.clientX, y0: p.clientY, base: 0, active: false, dead: false, sent: 0, pending: 0, line: linePx(), threshold: SWIPE_START_DEVICE_PX * cssPerDevicePx() };
     },
     { capture: true, passive: true },
   );
@@ -301,8 +309,8 @@
       if (swipe.dead) return;
       const lines = Math.trunc((p.clientY - swipe.base) / swipe.line);
       if (lines !== swipe.sent) {
-        pendingLines += lines - swipe.sent;
-        pendingFrom = swipe;
+        swipe.pending += lines - swipe.sent;
+        if (!pendingGestures.includes(swipe)) pendingGestures.push(swipe);
         swipe.sent = lines;
         flushScroll();
       }

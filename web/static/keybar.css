@@ -41,6 +41,13 @@ html.dc-kb-open #terminal-container {
   min-height: 2.6em;
   padding: 0 0.5em;
 }
+/* ▲ 上捲／▼ 下捲一組：整組當一個 flex 子項換行，兩顆不會被拆到不同排。 */
+#dc-keybar .dc-kb-group {
+  display: flex;
+  flex: 1 0 auto;
+  flex-wrap: nowrap;
+  gap: 0.35em;
+}
 #dc-keybar button:active {
   background: #3b4450;
 }
